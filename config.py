@@ -1,63 +1,91 @@
+"""Configuration helpers for the Telegram safety assistant bot."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import os
-from dataclasses import dataclass
 from pathlib import Path
-
-from dotenv import load_dotenv
-
-
-@dataclass(slots=True)
-class Settings:
-    bot_token: str
-    lm_studio_url: str
-    lm_studio_model: str
-    whisper_bin: Path
-    whisper_model: Path
-    admin_ids: tuple[int, ...]
-    enable_tts: bool
-    reindex_url: str
-    database_path: Path
-    voice_temp_dir: Path
-    log_dir: Path
-    docs_dir: Path
+from typing import List, Optional
 
 
-def load_config() -> Settings:
-    load_dotenv()
+DEFAULT_SYSTEM_PROMPT = (
+    "Ты – виртуальный консультант по охране труда. Отвечай формально, ссылаясь на "
+    "нормативные документы РФ, если они известны. Если нет данных, честно сообщай, "
+    "какую информацию нужно уточнить. Помогай с обучением, тестами и вопросами по "
+    "охране труда."
+)
 
-    admin_ids_raw = os.getenv("ADMIN_IDS", "")
-    admin_ids = tuple(
-        int(_id.strip())
-        for _id in admin_ids_raw.split(",")
-        if _id.strip().isdigit()
+
+def _get_env(name: str, default: Optional[str] = None, *, required: bool = False) -> str:
+    """Fetch environment variable or raise if required."""
+
+    value = os.environ.get(name, default)
+    if required and not value:
+        raise RuntimeError(f"Environment variable {name} is required")
+    return value
+
+
+@dataclass
+class Config:
+    """Runtime configuration for the bot."""
+
+    telegram_token: str = field(default_factory=lambda: _get_env("TELEGRAM_BOT_TOKEN", required=True))
+    lm_api_url: str = field(default_factory=lambda: _get_env(
+        "LM_STUDIO_API", "http://localhost:1234/v1/chat/completions"
+    ))
+    lm_model: str = field(default_factory=lambda: _get_env("LM_STUDIO_MODEL", "qwen/qwen3-vl-8b"))
+    system_prompt: str = field(default_factory=lambda: _get_env("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT))
+    downloads_dir: Path = field(
+        default_factory=lambda: Path(_get_env("BOT_RUNTIME_DIR", ".runtime")).resolve()
+    )
+    database_path: Path = field(
+        default_factory=lambda: Path(
+            _get_env("BOT_DB_PATH", ".runtime/bot_state.sqlite3")
+        ).resolve()
+    )
+    knowledge_root: Path = field(
+        default_factory=lambda: Path(_get_env("KNOWLEDGE_BASE_DIR", "knowledge_base")).resolve()
+    )
+    max_history_messages: int = int(_get_env("MAX_HISTORY_MESSAGES", "10"))
+    lm_temperature: float = float(_get_env("LM_TEMPERATURE", "0.3"))
+    lm_max_tokens: int = int(_get_env("LM_MAX_TOKENS", "1024"))
+
+    ffmpeg_binary: str = field(default_factory=lambda: _get_env("FFMPEG_BIN", "ffmpeg"))
+    whisper_binary: Path = field(
+        default_factory=lambda: Path(_get_env("WHISPER_BIN", "whisper.cpp/build/bin/whisper-cli")).resolve()
+    )
+    whisper_model_path: Path = field(
+        default_factory=lambda: Path(_get_env("WHISPER_MODEL", "whisper.cpp/models/ggml-small.bin")).resolve()
+    )
+    whisper_threads: int = int(_get_env("WHISPER_THREADS", "4"))
+    whisper_language: str = field(default_factory=lambda: _get_env("WHISPER_LANGUAGE", "ru"))
+    whisper_ld_library_path: Optional[str] = field(
+        default_factory=lambda: _get_env("WHISPER_LD_LIBRARY_PATH", None)
     )
 
-    voice_dir = Path(os.getenv("VOICE_TEMP_DIR", "data/voices")).resolve()
-    log_dir = Path(os.getenv("LOG_DIR", "data/logs")).resolve()
-    docs_dir = Path(os.getenv("DOCS_DIR", "data/docs")).resolve()
-    db_path = Path(os.getenv("DATABASE_PATH", "data/teacher_bot.db")).resolve()
-
-    voice_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    return Settings(
-        bot_token=os.environ.get("BOT_TOKEN", ""),
-        lm_studio_url=os.getenv(
-            "LM_STUDIO_URL", "http://127.0.0.1:1234/v1/chat/completions"
-        ),
-        lm_studio_model=os.getenv("LM_STUDIO_MODEL", "mistral"),
-        whisper_bin=Path(os.getenv("WHISPER_BIN", "./whisper.cpp/main")).resolve(),
-        whisper_model=Path(
-            os.getenv("WHISPER_MODEL", "./whisper.cpp/models/ggml-base-q5_1.bin")
-        ).resolve(),
-        admin_ids=admin_ids,
-        enable_tts=os.getenv("ENABLE_TTS", "false").lower() == "true",
-        reindex_url=os.getenv("REINDEX_URL", "http://127.0.0.1:8000/api/reindex"),
-        database_path=db_path,
-        voice_temp_dir=voice_dir,
-        log_dir=log_dir,
-        docs_dir=docs_dir,
+    admin_ids: List[int] = field(
+        default_factory=lambda: [
+            int(part.strip())
+            for part in _get_env("TELEGRAM_ADMIN_IDS", "").split(",")
+            if part.strip()
+        ]
     )
+
+    def ensure_directories(self) -> None:
+        """Create directories that must exist at runtime."""
+
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        self.knowledge_root.mkdir(parents=True, exist_ok=True)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+_config_cache: Optional[Config] = None
+
+
+def load_config() -> Config:
+    """Load configuration once."""
+
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = Config()
+        _config_cache.ensure_directories()
+    return _config_cache
