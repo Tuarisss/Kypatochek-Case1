@@ -1,1 +1,3 @@
-# Package marker for the bot components
+"""Telegram safety assistant bot package."""
+
+__all__ = []
